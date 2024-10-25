@@ -80,7 +80,3 @@ func debugServer(port int) {
 		log.Fatalf("The application was started with -debug flag but could not listen on port %v: \n %s", port, err)
 	}
 }
-
-}
-
-}
