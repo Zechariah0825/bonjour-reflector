@@ -2,7 +2,6 @@ package main
 
 import (
 	"net"
-
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
@@ -12,37 +11,22 @@ type bonjourPacket struct {
 	srcMAC     *net.HardwareAddr
 	dstMAC     *net.HardwareAddr
 	isIPv6     bool
-	vlanTag    *uint16
 	isDNSQuery bool
 }
 
 func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
-	// Process packets, and forward Bonjour traffic to the returned channel
-
-	// Set decoding to Lazy
 	source.DecodeOptions = gopacket.DecodeOptions{Lazy: true}
-
 	packetChan := make(chan bonjourPacket, 100)
 
 	go func() {
 		for packet := range source.Packets() {
-			tag := parseVLANTag(packet)
-
-			// Get source and destination mac addresses
 			srcMAC, dstMAC := parseEthernetLayer(packet)
-
-			// Check IP protocol version
 			isIPv6 := parseIPLayer(packet)
-
-			// Get UDP payload
 			payload := parseUDPLayer(packet)
-
 			isDNSQuery := parseDNSPayload(payload)
 
-			// Pass on the packet for its next adventure
 			packetChan <- bonjourPacket{
 				packet:     packet,
-				vlanTag:    tag,
 				srcMAC:     srcMAC,
 				dstMAC:     dstMAC,
 				isIPv6:     isIPv6,
@@ -62,48 +46,27 @@ func parseEthernetLayer(packet gopacket.Packet) (srcMAC, dstMAC *net.HardwareAdd
 	return
 }
 
-func parseVLANTag(packet gopacket.Packet) (tag *uint16) {
-	if parsedTag := packet.Layer(layers.LayerTypeDot1Q); parsedTag != nil {
-		tag = &parsedTag.(*layers.Dot1Q).VLANIdentifier
-	}
-	return
+func parseIPLayer(packet gopacket.Packet) bool {
+	return packet.Layer(layers.LayerTypeIPv6) != nil
 }
 
-func parseIPLayer(packet gopacket.Packet) (isIPv6 bool) {
-	if parsedIP := packet.Layer(layers.LayerTypeIPv4); parsedIP != nil {
-		isIPv6 = false
-	}
-	if parsedIP := packet.Layer(layers.LayerTypeIPv6); parsedIP != nil {
-		isIPv6 = true
-	}
-	return
-}
-
-func parseUDPLayer(packet gopacket.Packet) (payload []byte) {
+func parseUDPLayer(packet gopacket.Packet) []byte {
 	if parsedUDP := packet.Layer(layers.LayerTypeUDP); parsedUDP != nil {
-		payload = parsedUDP.(*layers.UDP).Payload
+		return parsedUDP.(*layers.UDP).Payload
 	}
-	return
+	return nil
 }
 
-func parseDNSPayload(payload []byte) (isDNSQuery bool) {
+func parseDNSPayload(payload []byte) bool {
 	packet := gopacket.NewPacket(payload, layers.LayerTypeDNS, gopacket.Default)
 	if parsedDNS := packet.Layer(layers.LayerTypeDNS); parsedDNS != nil {
-		isDNSQuery = !parsedDNS.(*layers.DNS).QR
+		return !parsedDNS.(*layers.DNS).QR
 	}
-	return
+	return false
 }
 
-type packetWriter interface {
-	WritePacketData([]byte) error
-}
-
-func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag uint16, brMACAddress net.HardwareAddr) {
-	*bonjourPacket.vlanTag = tag
+func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, brMACAddress net.HardwareAddr) {
 	*bonjourPacket.srcMAC = brMACAddress
-
-	// Network devices may set dstMAC to the local MAC address
-	// Rewrite dstMAC to ensure that it is set to the appropriate multicast MAC address
 	if bonjourPacket.isIPv6 {
 		*bonjourPacket.dstMAC = net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0xFB}
 	} else {
@@ -114,3 +77,4 @@ func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag ui
 	gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
 	handle.WritePacketData(buf.Bytes())
 }
+
